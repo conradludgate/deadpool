@@ -52,7 +52,7 @@
 
 mod builder;
 mod config;
-mod dropguard;
+// mod dropguard;
 mod errors;
 mod hooks;
 mod metrics;
@@ -83,7 +83,6 @@ use tokio::sync::{Semaphore, TryAcquireError};
 
 pub use crate::Status;
 
-use self::dropguard::DropGuard;
 pub use self::{
     builder::{BuildError, PoolBuilder},
     config::{CreatePoolError, PoolConfig, Timeouts},
@@ -300,7 +299,8 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
             inner: Arc::new(PoolInner {
                 manager: builder.manager,
                 slots: Slots {
-                    vec: RwLock::new(ArrayQueue::new(builder.config.max_size)),
+                    vec: RwLock::new(Some(ArrayQueue::new(builder.config.max_size))),
+                    size: AtomicUsize::new(0),
                 },
                 users: AtomicUsize::new(0),
                 semaphore: Semaphore::new(builder.config.max_size),
@@ -348,11 +348,6 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
     ///
     /// See [`PoolError`] for details.
     pub async fn timeout_get(&self, timeouts: &Timeouts) -> Result<W, PoolError<M::Error>> {
-        let _ = self.inner.users.fetch_add(1, Ordering::Relaxed);
-        let users_guard = DropGuard(|| {
-            let _ = self.inner.users.fetch_sub(1, Ordering::Relaxed);
-        });
-
         let non_blocking = match timeouts.wait {
             Some(t) => t.as_nanos() == 0,
             None => false,
@@ -380,7 +375,7 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
         };
 
         let inner_obj = loop {
-            let inner_obj = self.inner.slots.vec.read().unwrap().pop();
+            let inner_obj = self.inner.slots.vec.read().unwrap().as_ref().unwrap().pop();
             let inner_obj = if let Some(inner_obj) = inner_obj {
                 self.try_recycle(timeouts, inner_obj).await?
             } else {
@@ -391,7 +386,6 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
             }
         };
 
-        users_guard.disarm();
         permit.forget();
 
         Ok(Object {
@@ -471,6 +465,8 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
             pool: &self.inner,
         };
 
+        let _ = self.inner.slots.size.fetch_add(1, Ordering::Release);
+
         // Apply post_create hooks
         if let Some(_e) = self
             .inner
@@ -495,25 +491,16 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
     pub fn resize(&self, max_size: usize) {
         if self.inner.semaphore.is_closed() {
             return;
-        }
-
+        };
         let mut slots = self.inner.slots.vec.write().unwrap();
+        let slots = slots.as_mut().unwrap();
 
         let mut len = slots.len();
         if max_size < slots.capacity() {
-            while len > max_size {
-                if let Ok(permit) = self.inner.semaphore.try_acquire() {
-                    permit.forget();
-                    if slots.pop().is_some() {
-                        len -= 1;
-                    }
-                } else {
-                    break;
-                }
+            while len > max_size && slots.pop().is_some() {
+                let _ = self.inner.slots.size.fetch_sub(1, Ordering::Release);
+                len -= 1;
             }
-        } else {
-            let additional = max_size - len;
-            self.inner.semaphore.add_permits(additional);
         }
         slots.resize(max_size);
     }
@@ -568,8 +555,8 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
     ///
     /// This operation resizes the pool to 0.
     pub fn close(&self) {
-        self.resize(1);
         self.inner.semaphore.close();
+        let _ = self.inner.slots.vec.write().unwrap().take();
     }
 
     /// Indicates whether this [`Pool`] has been closed.
@@ -611,7 +598,8 @@ struct PoolInner<M: Manager> {
 
 #[derive(Debug)]
 struct Slots<T> {
-    vec: RwLock<ArrayQueue<T>>,
+    vec: RwLock<Option<ArrayQueue<T>>>,
+    size: AtomicUsize,
 }
 
 // Implemented manually to avoid unnecessary trait bound on the struct.
@@ -625,7 +613,6 @@ where
             .field("manager", &self.manager)
             .field("slots", &self.slots)
             .field("used", &self.users)
-            .field("semaphore", &self.semaphore)
             .field("config", &self.config)
             .field("runtime", &self.runtime)
             .field("hooks", &self.hooks)
@@ -635,22 +622,19 @@ where
 
 impl<M: Manager> PoolInner<M> {
     fn return_object(&self, inner: ObjectInner<M>) {
-        let _ = self.users.fetch_sub(1, Ordering::Relaxed);
-        let slots = self.slots.vec.read().unwrap();
-        match slots.push(inner) {
-            Ok(()) => {
-                drop(slots);
-                self.semaphore.add_permits(1);
-            }
-            Err(mut inner) => {
-                drop(slots);
-                self.manager.detach(&mut inner.obj);
-            }
+        let slot = match self.slots.vec.read().unwrap().as_ref() {
+            Some(slot) => slot.push(inner),
+            None => Err(inner),
+        };
+        if let Err(mut inner) = slot {
+            let _ = self.slots.size.fetch_sub(1, Ordering::Release);
+            self.manager.detach(&mut inner.obj);
+        } else {
+            self.semaphore.add_permits(1);
         }
     }
     fn detach_object(&self, obj: &mut M::Type) {
         let _ = self.users.fetch_sub(1, Ordering::Relaxed);
-        self.semaphore.add_permits(1);
         self.manager.detach(obj);
     }
 }
