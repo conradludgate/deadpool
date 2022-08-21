@@ -299,7 +299,7 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
             inner: Arc::new(PoolInner {
                 manager: builder.manager,
                 slots: Slots {
-                    vec: RwLock::new(Some(ArrayQueue::new(builder.config.max_size))),
+                    vec: ArrayQueue::new(builder.config.max_size),
                     size: AtomicUsize::new(0),
                 },
                 users: AtomicUsize::new(0),
@@ -375,8 +375,7 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
         };
 
         let inner_obj = loop {
-            let inner_obj = self.inner.slots.vec.read().unwrap().as_ref().unwrap().pop();
-            let inner_obj = if let Some(inner_obj) = inner_obj {
+            let inner_obj = if let Some(inner_obj) = self.inner.slots.vec.pop() {
                 self.try_recycle(timeouts, inner_obj).await?
             } else {
                 self.try_create(timeouts).await?
@@ -481,29 +480,29 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
         Ok(Some(unready_obj.ready()))
     }
 
-    /**
-     * Resize the pool. This change the `max_size` of the pool dropping
-     * excess objects and/or making space for new ones.
-     *
-     * If the pool is closed this method does nothing. The [`Pool::status`] method
-     * always reports a `max_size` of 0 for closed pools.
-     */
-    pub fn resize(&self, max_size: usize) {
-        if self.inner.semaphore.is_closed() {
-            return;
-        };
-        let mut slots = self.inner.slots.vec.write().unwrap();
-        let slots = slots.as_mut().unwrap();
+    // /**
+    //  * Resize the pool. This change the `max_size` of the pool dropping
+    //  * excess objects and/or making space for new ones.
+    //  *
+    //  * If the pool is closed this method does nothing. The [`Pool::status`] method
+    //  * always reports a `max_size` of 0 for closed pools.
+    //  */
+    // pub fn resize(&self, max_size: usize) {
+    //     if self.inner.semaphore.is_closed() {
+    //         return;
+    //     };
+    //     let mut slots = self.inner.slots.vec.write().unwrap();
+    //     let slots = slots.as_mut().unwrap();
 
-        let mut len = slots.len();
-        if max_size < slots.capacity() {
-            while len > max_size && slots.pop().is_some() {
-                let _ = self.inner.slots.size.fetch_sub(1, Ordering::Release);
-                len -= 1;
-            }
-        }
-        slots.resize(max_size);
-    }
+    //     let mut len = slots.len();
+    //     if max_size < slots.capacity() {
+    //         while len > max_size && slots.pop().is_some() {
+    //             let _ = self.inner.slots.size.fetch_sub(1, Ordering::Release);
+    //             len -= 1;
+    //         }
+    //     }
+    //     slots.resize(max_size);
+    // }
 
     // /// Retains only the objects specified by the given function.
     // ///
@@ -556,7 +555,6 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
     /// This operation resizes the pool to 0.
     pub fn close(&self) {
         self.inner.semaphore.close();
-        let _ = self.inner.slots.vec.write().unwrap().take();
     }
 
     /// Indicates whether this [`Pool`] has been closed.
@@ -598,7 +596,7 @@ struct PoolInner<M: Manager> {
 
 #[derive(Debug)]
 struct Slots<T> {
-    vec: RwLock<Option<ArrayQueue<T>>>,
+    vec: ArrayQueue<T>,
     size: AtomicUsize,
 }
 
@@ -622,11 +620,7 @@ where
 
 impl<M: Manager> PoolInner<M> {
     fn return_object(&self, inner: ObjectInner<M>) {
-        let slot = match self.slots.vec.read().unwrap().as_ref() {
-            Some(slot) => slot.push(inner),
-            None => Err(inner),
-        };
-        if let Err(mut inner) = slot {
+        if let Err(mut inner) = self.slots.vec.push(inner) {
             let _ = self.slots.size.fetch_sub(1, Ordering::Release);
             self.manager.detach(&mut inner.obj);
         } else {
