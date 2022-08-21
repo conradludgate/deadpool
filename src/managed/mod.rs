@@ -65,7 +65,6 @@ pub mod reexports;
 pub mod sync;
 
 use std::{
-    collections::VecDeque,
     convert::TryFrom,
     fmt,
     future::Future,
@@ -73,17 +72,14 @@ use std::{
     ops::{Deref, DerefMut},
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc, Mutex, Weak,
+        Arc, RwLock, Weak,
     },
     time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
+use crossbeam_queue::ArrayQueue;
 use deadpool_runtime::Runtime;
-// retain_mut is included since Rust 1.61
-// deadpool has a MSRV of 1.54
-#[allow(deprecated)]
-use retain_mut::RetainMut;
 use tokio::sync::{Semaphore, TryAcquireError};
 
 pub use crate::Status;
@@ -168,7 +164,7 @@ impl<'a, M: Manager> UnreadyObject<'a, M> {
 impl<'a, M: Manager> Drop for UnreadyObject<'a, M> {
     fn drop(&mut self) {
         if let Some(mut inner) = self.inner.take() {
-            self.pool.slots.lock().unwrap().size -= 1;
+            let _ = self.pool.slots.size.fetch_sub(1, Ordering::Relaxed);
             self.pool.manager.detach(&mut inner.obj);
         }
     }
@@ -305,11 +301,10 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
         Self {
             inner: Arc::new(PoolInner {
                 manager: builder.manager,
-                slots: Mutex::new(Slots {
-                    vec: VecDeque::with_capacity(builder.config.max_size),
-                    size: 0,
-                    max_size: builder.config.max_size,
-                }),
+                slots: Slots {
+                    vec: RwLock::new(ArrayQueue::new(builder.config.max_size)),
+                    size: AtomicUsize::new(0),
+                },
                 users: AtomicUsize::new(0),
                 semaphore: Semaphore::new(builder.config.max_size),
                 config: builder.config,
@@ -388,7 +383,7 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
         };
 
         let inner_obj = loop {
-            let inner_obj = self.inner.slots.lock().unwrap().vec.pop_front();
+            let inner_obj = self.inner.slots.vec.read().unwrap().pop();
             let inner_obj = if let Some(inner_obj) = inner_obj {
                 self.try_recycle(timeouts, inner_obj).await?
             } else {
@@ -479,7 +474,7 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
             pool: &self.inner,
         };
 
-        self.inner.slots.lock().unwrap().size += 1;
+        let _ = self.inner.slots.size.fetch_add(1, Ordering::Relaxed);
 
         // Apply post_create hooks
         if let Some(_e) = self
@@ -506,73 +501,64 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
         if self.inner.semaphore.is_closed() {
             return;
         }
-        let mut slots = self.inner.slots.lock().unwrap();
-        let old_max_size = slots.max_size;
-        slots.max_size = max_size;
-        // shrink pool
-        if max_size < old_max_size {
-            while slots.size > slots.max_size {
+
+        let mut slots = self.inner.slots.vec.write().unwrap();
+
+        if max_size < slots.capacity() {
+            while self.inner.slots.size.load(Ordering::Relaxed) > max_size {
                 if let Ok(permit) = self.inner.semaphore.try_acquire() {
                     permit.forget();
-                    if slots.vec.pop_front().is_some() {
-                        slots.size -= 1;
+                    if slots.pop().is_some() {
+                        let _ = self.inner.slots.size.fetch_sub(1, Ordering::Relaxed);
                     }
                 } else {
                     break;
                 }
             }
-            // Create a new VecDeque with a smaller capacity
-            let mut vec = VecDeque::with_capacity(max_size);
-            for obj in slots.vec.drain(..) {
-                vec.push_back(obj);
-            }
-            slots.vec = vec;
-        }
-        // grow pool
-        if max_size > old_max_size {
-            let additional = slots.max_size - slots.size;
-            slots.vec.reserve_exact(additional);
+        } else {
+            let additional = max_size - self.inner.slots.size.load(Ordering::Relaxed);
             self.inner.semaphore.add_permits(additional);
         }
+        slots.resize(max_size);
     }
 
-    /// Retains only the objects specified by the given function.
-    ///
-    /// This function is typically used to remove objects from
-    /// the pool based on their current state or metrics.
-    ///
-    /// **Caution:** This function blocks the entire pool while
-    /// it is running. Therefore the given function should not
-    /// block.
-    ///
-    /// The following example starts a background task that
-    /// runs every 30 seconds and removes objects from the pool
-    /// that haven't been used for more than one minute.
-    ///
-    /// ```rust,ignore
-    /// let interval = Duration::from_secs(30);
-    /// let max_age = Duration::from_secs(60);
-    /// tokio::spawn(async move {
-    ///     loop {
-    ///         tokio::time::sleep(interval).await;
-    ///         pool.retain(|_, metrics| metrics.last_used() < max_age);
-    ///     }
-    /// });
-    /// ```
-    pub fn retain(&self, f: impl Fn(&M::Type, Metrics) -> bool) {
-        let mut guard = self.inner.slots.lock().unwrap();
-        let len_before = guard.vec.len();
-        #[allow(deprecated)]
-        RetainMut::retain_mut(&mut guard.vec, |obj| {
-            if f(&obj.obj, obj.metrics) {
-                true
-            } else {
-                self.manager().detach(&mut obj.obj);
-                false
-            }
-        });
-        guard.size -= len_before - guard.vec.len();
-    }
+    // /// Retains only the objects specified by the given function.
+    // ///
+    // /// This function is typically used to remove objects from
+    // /// the pool based on their current state or metrics.
+    // ///
+    // /// **Caution:** This function blocks the entire pool while
+    // /// it is running. Therefore the given function should not
+    // /// block.
+    // ///
+    // /// The following example starts a background task that
+    // /// runs every 30 seconds and removes objects from the pool
+    // /// that haven't been used for more than one minute.
+    // ///
+    // /// ```rust,ignore
+    // /// let interval = Duration::from_secs(30);
+    // /// let max_age = Duration::from_secs(60);
+    // /// tokio::spawn(async move {
+    // ///     loop {
+    // ///         tokio::time::sleep(interval).await;
+    // ///         pool.retain(|_, metrics| metrics.last_used() < max_age);
+    // ///     }
+    // /// });
+    // /// ```
+    // pub fn retain(&self, f: impl Fn(&M::Type, Metrics) -> bool) {
+    //     let mut guard = self.inner.slots.lock().unwrap();
+    //     let len_before = guard.vec.len();
+    //     #[allow(deprecated)]
+    //     RetainMut::retain_mut(&mut guard.vec, |obj| {
+    //         if f(&obj.obj, obj.metrics) {
+    //             true
+    //         } else {
+    //             self.manager().detach(&mut obj.obj);
+    //             false
+    //         }
+    //     });
+    //     guard.size -= len_before - guard.vec.len();
+    // }
 
     /// Get current timeout configuration
     pub fn timeouts(&self) -> Timeouts {
@@ -586,7 +572,7 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
     ///
     /// This operation resizes the pool to 0.
     pub fn close(&self) {
-        self.resize(0);
+        self.resize(1);
         self.inner.semaphore.close();
     }
 
@@ -598,12 +584,13 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
     /// Retrieves [`Status`] of this [`Pool`].
     #[must_use]
     pub fn status(&self) -> Status {
-        let slots = self.inner.slots.lock().unwrap();
+        let max_size = self.inner.slots.vec.read().unwrap().capacity();
+        let size = self.inner.slots.size.load(Ordering::Relaxed);
         let used = self.inner.users.load(Ordering::Relaxed);
-        let available = isize::try_from(slots.size).unwrap() - isize::try_from(used).unwrap();
+        let available = isize::try_from(size).unwrap() - isize::try_from(used).unwrap();
         Status {
-            max_size: slots.max_size,
-            size: slots.size,
+            max_size,
+            size,
             available,
         }
     }
@@ -617,7 +604,7 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
 
 struct PoolInner<M: Manager> {
     manager: M,
-    slots: Mutex<Slots<ObjectInner<M>>>,
+    slots: Slots<ObjectInner<M>>,
     /// Number of available [`Object`]s in the [`Pool`]. If there are no
     /// [`Object`]s in the [`Pool`] this number can become negative and store
     /// the number of [`Future`]s waiting for an [`Object`].
@@ -630,9 +617,8 @@ struct PoolInner<M: Manager> {
 
 #[derive(Debug)]
 struct Slots<T> {
-    vec: VecDeque<T>,
-    size: usize,
-    max_size: usize,
+    vec: RwLock<ArrayQueue<T>>,
+    size: AtomicUsize,
 }
 
 // Implemented manually to avoid unnecessary trait bound on the struct.
@@ -657,22 +643,27 @@ where
 impl<M: Manager> PoolInner<M> {
     fn return_object(&self, mut inner: ObjectInner<M>) {
         let _ = self.users.fetch_sub(1, Ordering::Relaxed);
-        let mut slots = self.slots.lock().unwrap();
-        if slots.size <= slots.max_size {
-            slots.vec.push_back(inner);
-            drop(slots);
-            self.semaphore.add_permits(1);
-        } else {
-            slots.size -= 1;
-            drop(slots);
-            self.manager.detach(&mut inner.obj);
+        let slots = self.slots.vec.read().unwrap();
+
+        if self.slots.size.load(Ordering::Relaxed) <= slots.capacity() {
+            match slots.push(inner) {
+                Ok(()) => {
+                    drop(slots);
+                    self.semaphore.add_permits(1);
+                    return;
+                }
+                Err(i) => inner = i,
+            }
         }
+
+        let _ = self.slots.size.fetch_sub(1, Ordering::Relaxed);
+        drop(slots);
+        self.manager.detach(&mut inner.obj);
     }
     fn detach_object(&self, obj: &mut M::Type) {
         let _ = self.users.fetch_sub(1, Ordering::Relaxed);
-        let mut slots = self.slots.lock().unwrap();
-        let add_permits = slots.size <= slots.max_size;
-        slots.size -= 1;
+        let slots = self.slots.vec.read().unwrap();
+        let add_permits = self.slots.size.fetch_sub(1, Ordering::Relaxed) <= slots.capacity();
         drop(slots);
         if add_permits {
             self.semaphore.add_permits(1);

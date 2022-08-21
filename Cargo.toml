@@ -22,6 +22,7 @@ rt_tokio_1 = ["deadpool-runtime/tokio_1"]
 rt_async-std_1 = ["deadpool-runtime/async-std_1"]
 
 [dependencies]
+crossbeam-queue = { git = "https://github.com/conradludgate/crossbeam", rev = "97706f4c3a6852e2f4de5c46fd4623366feb436d" }
 num_cpus = "1.11.1"
 retain_mut ="0.1.6"
 # `managed` feature
