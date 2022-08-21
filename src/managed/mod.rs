@@ -65,7 +65,6 @@ pub mod reexports;
 pub mod sync;
 
 use std::{
-    convert::TryFrom,
     fmt,
     future::Future,
     marker::PhantomData,
@@ -164,7 +163,6 @@ impl<'a, M: Manager> UnreadyObject<'a, M> {
 impl<'a, M: Manager> Drop for UnreadyObject<'a, M> {
     fn drop(&mut self) {
         if let Some(mut inner) = self.inner.take() {
-            let _ = self.pool.slots.size.fetch_sub(1, Ordering::Relaxed);
             self.pool.manager.detach(&mut inner.obj);
         }
     }
@@ -303,7 +301,6 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
                 manager: builder.manager,
                 slots: Slots {
                     vec: RwLock::new(ArrayQueue::new(builder.config.max_size)),
-                    size: AtomicUsize::new(0),
                 },
                 users: AtomicUsize::new(0),
                 semaphore: Semaphore::new(builder.config.max_size),
@@ -474,8 +471,6 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
             pool: &self.inner,
         };
 
-        let _ = self.inner.slots.size.fetch_add(1, Ordering::Relaxed);
-
         // Apply post_create hooks
         if let Some(_e) = self
             .inner
@@ -504,19 +499,20 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
 
         let mut slots = self.inner.slots.vec.write().unwrap();
 
+        let mut len = slots.len();
         if max_size < slots.capacity() {
-            while self.inner.slots.size.load(Ordering::Relaxed) > max_size {
+            while len > max_size {
                 if let Ok(permit) = self.inner.semaphore.try_acquire() {
                     permit.forget();
                     if slots.pop().is_some() {
-                        let _ = self.inner.slots.size.fetch_sub(1, Ordering::Relaxed);
+                        len -= 1;
                     }
                 } else {
                     break;
                 }
             }
         } else {
-            let additional = max_size - self.inner.slots.size.load(Ordering::Relaxed);
+            let additional = max_size - len;
             self.inner.semaphore.add_permits(additional);
         }
         slots.resize(max_size);
@@ -581,19 +577,17 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
         self.inner.semaphore.is_closed()
     }
 
-    /// Retrieves [`Status`] of this [`Pool`].
-    #[must_use]
-    pub fn status(&self) -> Status {
-        let max_size = self.inner.slots.vec.read().unwrap().capacity();
-        let size = self.inner.slots.size.load(Ordering::Relaxed);
-        let used = self.inner.users.load(Ordering::Relaxed);
-        let available = isize::try_from(size).unwrap() - isize::try_from(used).unwrap();
-        Status {
-            max_size,
-            size,
-            available,
-        }
-    }
+    // /// Retrieves [`Status`] of this [`Pool`].
+    // #[must_use]
+    // pub fn status(&self) -> Status {
+    //     let max_size = self.inner.slots.vec.read().unwrap().capacity();
+    //     let used = self.inner.users.load(Ordering::Relaxed);
+    //     let available = isize::try_from(size).unwrap() - isize::try_from(used).unwrap();
+    //     Status {
+    //         max_size,
+    //         available,
+    //     }
+    // }
 
     /// Returns [`Manager`] of this [`Pool`].
     #[must_use]
@@ -618,7 +612,6 @@ struct PoolInner<M: Manager> {
 #[derive(Debug)]
 struct Slots<T> {
     vec: RwLock<ArrayQueue<T>>,
-    size: AtomicUsize,
 }
 
 // Implemented manually to avoid unnecessary trait bound on the struct.
@@ -641,33 +634,23 @@ where
 }
 
 impl<M: Manager> PoolInner<M> {
-    fn return_object(&self, mut inner: ObjectInner<M>) {
+    fn return_object(&self, inner: ObjectInner<M>) {
         let _ = self.users.fetch_sub(1, Ordering::Relaxed);
         let slots = self.slots.vec.read().unwrap();
-
-        if self.slots.size.load(Ordering::Relaxed) <= slots.capacity() {
-            match slots.push(inner) {
-                Ok(()) => {
-                    drop(slots);
-                    self.semaphore.add_permits(1);
-                    return;
-                }
-                Err(i) => inner = i,
+        match slots.push(inner) {
+            Ok(()) => {
+                drop(slots);
+                self.semaphore.add_permits(1);
+            }
+            Err(mut inner) => {
+                drop(slots);
+                self.manager.detach(&mut inner.obj);
             }
         }
-
-        let _ = self.slots.size.fetch_sub(1, Ordering::Relaxed);
-        drop(slots);
-        self.manager.detach(&mut inner.obj);
     }
     fn detach_object(&self, obj: &mut M::Type) {
         let _ = self.users.fetch_sub(1, Ordering::Relaxed);
-        let slots = self.slots.vec.read().unwrap();
-        let add_permits = self.slots.size.fetch_sub(1, Ordering::Relaxed) <= slots.capacity();
-        drop(slots);
-        if add_permits {
-            self.semaphore.add_permits(1);
-        }
+        self.semaphore.add_permits(1);
         self.manager.detach(obj);
     }
 }
