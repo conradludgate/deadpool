@@ -33,10 +33,10 @@ pub struct Status {
     /// The maximum size of the pool.
     pub max_size: usize,
 
-    /// The connections idle in the pool.
+    /// The current items idle in the pool.
     pub size: usize,
 
-    /// The connections available from the pool.
+    /// The permits available from the pool.
     pub available: usize,
 }
 
