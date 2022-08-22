@@ -1,6 +1,17 @@
 # Change Log
 
-## v0.9.3 (unreleased)
+## v0.9.5
+
+- Fix bug causing the pool to exceed its `max_size` in the
+  case of a recycling error.
+- Fix panic caused by an integer overflow in the case of
+  a failing `post_create` hook.
+
+## v0.9.4
+
+- Fix `HookError` and `HookErrorCause` in re-exports
+
+## v0.9.3
 
 * Add `Pool::retain` method
 * Fix `Pool::get_timeouts` method

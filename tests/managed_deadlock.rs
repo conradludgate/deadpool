@@ -1,5 +1,3 @@
-#![cfg(feature = "managed")]
-
 use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
@@ -8,9 +6,9 @@ use tokio::{
     task, time,
 };
 
-use deadpool::managed::{self, RecycleError, RecycleResult};
+use deadpool::{RecycleError, RecycleResult};
 
-type Pool = managed::Pool<Manager>;
+type Pool = deadpool::Pool<Manager>;
 
 #[derive(Clone)]
 struct Manager {
@@ -32,14 +30,6 @@ impl RemoteControl {
     pub fn create_err(&mut self) {
         self.create_tx.try_send(Err(())).unwrap();
     }
-    /*
-    pub fn recycle_ok(&mut self) {
-        self.recycle_tx.try_send(Ok(())).unwrap();
-    }
-    pub fn recycle_err(&mut self) {
-        self.recycle_tx.try_send(Err(())).unwrap();
-    }
-    */
 }
 
 impl Manager {
@@ -58,7 +48,7 @@ impl Manager {
 }
 
 #[async_trait]
-impl managed::Manager for Manager {
+impl deadpool::Manager for Manager {
     type Type = ();
     type Error = ();
 
@@ -80,33 +70,33 @@ async fn pool_drained() {
     let manager = Manager::new();
     let mut rc = manager.remote_control.clone();
 
-    let pool = Pool::builder(manager).max_size(1).build().unwrap();
+    let pool = Pool::builder(manager).max_size(1).build();
     let pool_clone = pool.clone();
 
     // let first task grab the only connection
     let get_1 = tokio::spawn(async move { pool_clone.get().await });
     task::yield_now().await;
     assert_eq!(pool.status().size, 0);
-    assert_eq!(pool.status().available, -1);
+    assert_eq!(pool.status().available, 0);
 
     // let second task wait for the connection
     let pool_clone = pool.clone();
     let get_2 = tokio::spawn(async move { pool_clone.get().await });
     task::yield_now().await;
     assert_eq!(pool.status().size, 0);
-    assert_eq!(pool.status().available, -2);
+    assert_eq!(pool.status().available, 0);
 
     // first task receives an error
     rc.create_err();
     assert!(get_1.await.unwrap().is_err());
     assert_eq!(pool.status().size, 0);
-    assert_eq!(pool.status().available, -1);
+    assert_eq!(pool.status().available, 0);
 
     // the second task should now be able to create an object
     rc.create_ok();
     let get_2_result = time::timeout(Duration::from_millis(10), get_2).await;
     assert!(get_2_result.is_ok(), "get_2 should not time out");
-    assert_eq!(pool.status().size, 1);
+    assert_eq!(pool.status().size, 0);
     assert_eq!(pool.status().available, 0);
     assert!(
         get_2_result.unwrap().unwrap().is_ok(),
