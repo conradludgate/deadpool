@@ -44,24 +44,21 @@ const CONFIGS: &[Config] = &[
 struct Manager {}
 
 #[async_trait::async_trait]
-impl deadpool::managed::Manager for Manager {
+impl deadpool::Manager for Manager {
     type Type = ();
     type Error = ();
     async fn create(&self) -> Result<Self::Type, Self::Error> {
         Ok(())
     }
-    async fn recycle(&self, _: &mut Self::Type) -> deadpool::managed::RecycleResult<Self::Error> {
+    async fn recycle(&self, _: &mut Self::Type) -> deadpool::RecycleResult<Self::Error> {
         Ok(())
     }
 }
 
-type Pool = deadpool::managed::Pool<Manager>;
+type Pool = deadpool::Pool<Manager>;
 
 async fn bench_get(cfg: Config) {
-    let pool = Pool::builder(Manager {})
-        .max_size(cfg.pool_size)
-        .build()
-        .unwrap();
+    let pool = Pool::builder(Manager {}).max_size(cfg.pool_size).build();
     let join_handles: Vec<JoinHandle<()>> = (0..cfg.workers)
         .map(|_| {
             let pool = pool.clone();

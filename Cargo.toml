@@ -14,27 +14,17 @@ readme = "README.md"
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
-[features]
-default = ["managed", "unmanaged"]
-managed = ["async-trait"]
-unmanaged = []
-rt_tokio_1 = ["deadpool-runtime/tokio_1"]
-rt_async-std_1 = ["deadpool-runtime/async-std_1"]
-
 [dependencies]
-crossbeam-queue = { git = "https://github.com/conradludgate/crossbeam", rev = "97706f4c3a6852e2f4de5c46fd4623366feb436d" }
+# crossbeam-queue = { git = "https://github.com/conradludgate/crossbeam", rev = "97706f4c3a6852e2f4de5c46fd4623366feb436d" }
+crossbeam-queue = "0.3.6"
 num_cpus = "1.11.1"
 retain_mut ="0.1.6"
 # `managed` feature
-async-trait = { version = "0.1.17", optional = true }
-# `serde` feature
-serde = { version = "1.0.103", features = ["derive"], optional = true }
-# `rt_async-std_1` feature
-deadpool-runtime = { version = "0.1", path = "./runtime" }
+async-trait = { version = "0.1.17" }
 # The dependency of tokio::sync is non-optional. Deadpool depends on
 # `tokio::sync::Semaphore`. No other features of `tokio` are enabled or used
 # unless the `rt_tokio_1` feature is enabled.
-tokio = { version = "1.0", features = ["sync"] }
+tokio = { version = "1.0", features = ["sync", "time"] }
 
 [dev-dependencies]
 async-std = { version = "1.0", features = ["attributes"] }
@@ -47,20 +37,3 @@ tokio = { version = "1.5.0", features = ["macros", "rt", "rt-multi-thread", "tim
 name = "managed"
 harness = false
 
-[[bench]]
-name = "unmanaged"
-harness = false
-
-[workspace]
-members = [
-    "diesel",
-    "lapin",
-    "memcached",
-    "postgres",
-    "r2d2",
-    "redis",
-    "runtime",
-    "sqlite",
-    "sync",
-    "examples/*"
-]

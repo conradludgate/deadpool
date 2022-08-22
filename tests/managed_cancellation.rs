@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use deadpool::managed::{Hook, HookError, HookErrorCause, Manager, Pool, RecycleResult};
+use deadpool::{Manager, Pool, RecycleResult};
 use itertools::Itertools;
 use tokio::time::{sleep, timeout};
 
@@ -34,21 +34,15 @@ impl Gate {
 struct Gates {
     create: Gate,
     recycle: Gate,
-    post_create: Gate,
-    pre_recycle: Gate,
-    post_recycle: Gate,
 }
 
 fn configs() -> impl Iterator<Item = Gates> {
-    (0..5)
+    (0..2)
         .map(|_| &[Gate::Ok, Gate::Err, Gate::Slow, Gate::Never])
         .multi_cartesian_product()
         .map(move |gates| Gates {
             create: *gates[0],
             recycle: *gates[1],
-            post_create: *gates[2],
-            pre_recycle: *gates[3],
-            post_recycle: *gates[4],
         })
 }
 
@@ -57,38 +51,7 @@ fn pools(max_size: usize) -> impl Iterator<Item = Pool<GatedManager>> {
         let manager = GatedManager { gates };
         Pool::builder(manager)
             .max_size(max_size)
-            .post_create(Hook::async_fn(move |_, _| {
-                Box::pin(async move {
-                    gates
-                        .post_create
-                        .open()
-                        .await
-                        .map_err(|_| HookError::Abort(HookErrorCause::StaticMessage("Fail")))?;
-                    Ok(())
-                })
-            }))
-            .pre_recycle(Hook::async_fn(move |_, _| {
-                Box::pin(async move {
-                    gates
-                        .pre_recycle
-                        .open()
-                        .await
-                        .map_err(|_| HookError::Continue(None))?;
-                    Ok(())
-                })
-            }))
-            .post_recycle(Hook::async_fn(move |_, _| {
-                Box::pin(async move {
-                    gates
-                        .post_recycle
-                        .open()
-                        .await
-                        .map_err(|_| HookError::Continue(None))?;
-                    Ok(())
-                })
-            }))
             .build()
-            .unwrap()
     })
 }
 
@@ -156,7 +119,7 @@ async fn test_cancellations() {
             pool.manager().gates
         );
         assert!(
-            status.available <= status.max_size as isize,
+            status.available <= status.max_size,
             "available({}) > max_size({}), gates: {:?}",
             status.available,
             status.max_size,
