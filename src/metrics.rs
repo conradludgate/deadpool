@@ -14,10 +14,12 @@ pub struct Metrics {
 
 impl Metrics {
     /// Access the age of this object
+    #[must_use]
     pub fn age(&self) -> Duration {
         self.created.elapsed()
     }
     /// Get the time elapsed when this object was last used
+    #[must_use]
     pub fn last_used(&self) -> Duration {
         self.recycled.unwrap_or(self.created).elapsed()
     }

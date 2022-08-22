@@ -85,8 +85,7 @@ async fn closing() {
     assert!(matches!(join_handle.await.unwrap(), Err(PoolError::Closed)));
     assert!(matches!(pool.get().await, Err(PoolError::Closed)));
     assert!(matches!(
-        pool.timeout_get(Some(Duration::ZERO))
-        .await,
+        pool.timeout_get(Some(Duration::ZERO)).await,
         Err(PoolError::Closed)
     ));
 
@@ -173,4 +172,3 @@ async fn object_take() {
     assert_eq!(status.size, 2);
     assert_eq!(status.available, 2);
 }
-

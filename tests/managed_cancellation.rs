@@ -49,9 +49,7 @@ fn configs() -> impl Iterator<Item = Gates> {
 fn pools(max_size: usize) -> impl Iterator<Item = Pool<GatedManager>> {
     configs().map(move |gates| {
         let manager = GatedManager { gates };
-        Pool::builder(manager)
-            .max_size(max_size)
-            .build()
+        Pool::builder(manager).max_size(max_size).build()
     })
 }
 

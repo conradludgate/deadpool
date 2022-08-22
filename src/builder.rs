@@ -2,39 +2,6 @@ use std::{fmt, marker::PhantomData, time::Duration};
 
 use super::{Manager, Object, Pool, PoolConfig};
 
-/// Possible errors returned when [`PoolBuilder::build()`] fails to build a
-/// [`Pool`].
-#[derive(Debug)]
-pub enum BuildError<E> {
-    /// Backend reported an error when creating a [`Pool`].
-    Backend(E),
-
-    /// [`Runtime`] is required.
-    NoRuntimeSpecified(String),
-}
-
-impl<E: std::fmt::Display> fmt::Display for BuildError<E> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Backend(e) => write!(f, "Error occurred while building the pool: Backend: {}", e),
-            Self::NoRuntimeSpecified(msg) => write!(
-                f,
-                "Error occurred while building the pool: NoRuntimeSpecified: {}",
-                msg
-            ),
-        }
-    }
-}
-
-impl<E: std::error::Error + 'static> std::error::Error for BuildError<E> {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Backend(e) => Some(e),
-            Self::NoRuntimeSpecified(_) => None,
-        }
-    }
-}
-
 /// Builder for [`Pool`]s.
 ///
 /// Instances of this are created by calling the [`Pool::builder()`] method.
@@ -97,7 +64,7 @@ where
         self
     }
 
-    /// Sets the [`PoolConfig::timeouts`].
+    /// Sets the [`PoolConfig::timeout`].
     pub fn timeout(mut self, value: Option<Duration>) -> Self {
         self.config.timeout = value;
         self

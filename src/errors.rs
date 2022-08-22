@@ -74,11 +74,6 @@ pub enum PoolError<E> {
     ///
     /// [`Pool`]: super::Pool
     Closed,
-
-    /// No [`Runtime`] was specified.
-    ///
-    /// [`Runtime`]: crate::Runtime
-    NoRuntimeSpecified,
 }
 
 impl<E> From<E> for PoolError<E> {
@@ -100,7 +95,6 @@ impl<E: fmt::Display> fmt::Display for PoolError<E> {
             },
             Self::Backend(e) => write!(f, "Error occurred while creating a new object: {}", e),
             Self::Closed => write!(f, "Pool has been closed"),
-            Self::NoRuntimeSpecified => write!(f, "No runtime specified"),
         }
     }
 }
@@ -108,7 +102,7 @@ impl<E: fmt::Display> fmt::Display for PoolError<E> {
 impl<E: std::error::Error + 'static> std::error::Error for PoolError<E> {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Timeout(_) | Self::Closed | Self::NoRuntimeSpecified => None,
+            Self::Timeout(_) | Self::Closed => None,
             Self::Backend(e) => Some(e),
         }
     }

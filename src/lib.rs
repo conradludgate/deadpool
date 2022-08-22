@@ -7,6 +7,7 @@
     rustdoc::private_intra_doc_links
 )]
 #![forbid(non_ascii_idents, unsafe_code)]
+#![warn(clippy::pedantic)]
 #![warn(
     deprecated_in_future,
     missing_copy_implementations,
@@ -18,6 +19,11 @@
     unused_lifetimes,
     unused_qualifications,
     unused_results
+)]
+#![allow(
+    clippy::missing_panics_doc,
+    clippy::module_name_repetitions,
+    clippy::match_same_arms
 )]
 
 mod builder;
@@ -57,8 +63,8 @@ use tokio::{
 };
 
 pub use self::{
-    builder::{BuildError, PoolBuilder},
-    config::{CreatePoolError, PoolConfig},
+    builder::PoolBuilder,
+    config::PoolConfig,
     errors::{PoolError, RecycleError, TimeoutType},
     metrics::Metrics,
 };
@@ -168,7 +174,7 @@ impl<M: Manager> Object<M> {
     pub fn take(mut this: Self) -> M::Type {
         let mut inner = this.inner.take().unwrap().obj;
         if let Some(pool) = Object::pool(&this) {
-            pool.inner.detach_object(&mut inner)
+            pool.inner.detach_object(&mut inner);
         }
         inner
     }
@@ -194,7 +200,7 @@ impl<M: Manager> Drop for Object<M> {
     fn drop(&mut self) {
         if let Some(inner) = self.inner.take() {
             if let Some(pool) = self.pool.upgrade() {
-                pool.return_object(inner)
+                pool.return_object(inner);
             }
         }
     }
@@ -242,10 +248,7 @@ where
     W: From<Object<M>>,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Pool")
-            .field("inner", &self.inner)
-            .field("wrapper", &self._wrapper)
-            .finish()
+        f.debug_struct("Pool").field("inner", &self.inner).finish()
     }
 }
 
@@ -390,6 +393,7 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
     }
 
     /// Indicates whether this [`Pool`] has been closed.
+    #[must_use]
     pub fn is_closed(&self) -> bool {
         self.inner.slots.semaphore.is_closed()
     }
@@ -401,8 +405,8 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
         let max_size = self.inner.slots.vec.capacity();
         let available = self.inner.slots.semaphore.available_permits();
         Status {
-            size,
             max_size,
+            size,
             available,
         }
     }
