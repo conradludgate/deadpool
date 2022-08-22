@@ -300,10 +300,9 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
                 manager: builder.manager,
                 slots: Slots {
                     vec: ArrayQueue::new(builder.config.max_size),
-                    size: AtomicUsize::new(0),
+                    semaphore: Semaphore::new(builder.config.max_size),
                 },
                 users: AtomicUsize::new(0),
-                semaphore: Semaphore::new(builder.config.max_size),
                 config: builder.config,
                 hooks: builder.hooks,
                 runtime: builder.runtime,
@@ -354,10 +353,14 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
         };
 
         let permit = if non_blocking {
-            self.inner.semaphore.try_acquire().map_err(|e| match e {
-                TryAcquireError::Closed => PoolError::Closed,
-                TryAcquireError::NoPermits => PoolError::Timeout(TimeoutType::Wait),
-            })?
+            self.inner
+                .slots
+                .semaphore
+                .try_acquire()
+                .map_err(|e| match e {
+                    TryAcquireError::Closed => PoolError::Closed,
+                    TryAcquireError::NoPermits => PoolError::Timeout(TimeoutType::Wait),
+                })?
         } else {
             apply_timeout(
                 self.inner.runtime,
@@ -365,6 +368,7 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
                 timeouts.wait,
                 async {
                     self.inner
+                        .slots
                         .semaphore
                         .acquire()
                         .await
@@ -374,24 +378,22 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
             .await?
         };
 
-        let inner_obj = loop {
+        loop {
             let inner_obj = if let Some(inner_obj) = self.inner.slots.vec.pop() {
                 self.try_recycle(timeouts, inner_obj).await?
             } else {
                 self.try_create(timeouts).await?
             };
             if let Some(inner_obj) = inner_obj {
-                break inner_obj;
+                permit.forget();
+
+                break Ok(Object {
+                    inner: Some(inner_obj),
+                    pool: Arc::downgrade(&self.inner),
+                }
+                .into());
             }
-        };
-
-        permit.forget();
-
-        Ok(Object {
-            inner: Some(inner_obj),
-            pool: Arc::downgrade(&self.inner),
         }
-        .into())
     }
 
     #[inline]
@@ -463,8 +465,6 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
             }),
             pool: &self.inner,
         };
-
-        let _ = self.inner.slots.size.fetch_add(1, Ordering::Release);
 
         // Apply post_create hooks
         if let Some(_e) = self
@@ -554,12 +554,13 @@ impl<M: Manager, W: From<Object<M>>> Pool<M, W> {
     ///
     /// This operation resizes the pool to 0.
     pub fn close(&self) {
-        self.inner.semaphore.close();
+        self.inner.slots.semaphore.close();
+        while self.inner.slots.vec.pop().is_some() {}
     }
 
     /// Indicates whether this [`Pool`] has been closed.
     pub fn is_closed(&self) -> bool {
-        self.inner.semaphore.is_closed()
+        self.inner.slots.semaphore.is_closed()
     }
 
     // /// Retrieves [`Status`] of this [`Pool`].
@@ -588,7 +589,6 @@ struct PoolInner<M: Manager> {
     /// [`Object`]s in the [`Pool`] this number can become negative and store
     /// the number of [`Future`]s waiting for an [`Object`].
     users: AtomicUsize,
-    semaphore: Semaphore,
     config: PoolConfig,
     runtime: Option<Runtime>,
     hooks: hooks::Hooks<M>,
@@ -597,7 +597,7 @@ struct PoolInner<M: Manager> {
 #[derive(Debug)]
 struct Slots<T> {
     vec: ArrayQueue<T>,
-    size: AtomicUsize,
+    semaphore: Semaphore,
 }
 
 // Implemented manually to avoid unnecessary trait bound on the struct.
@@ -621,10 +621,9 @@ where
 impl<M: Manager> PoolInner<M> {
     fn return_object(&self, inner: ObjectInner<M>) {
         if let Err(mut inner) = self.slots.vec.push(inner) {
-            let _ = self.slots.size.fetch_sub(1, Ordering::Release);
             self.manager.detach(&mut inner.obj);
         } else {
-            self.semaphore.add_permits(1);
+            self.slots.semaphore.add_permits(1);
         }
     }
     fn detach_object(&self, obj: &mut M::Type) {
