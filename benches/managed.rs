@@ -1,8 +1,6 @@
-use std::{convert::TryInto, fmt::Display};
+use std::{fmt::Display, thread::scope};
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-
-use tokio::task::JoinHandle;
 
 //const ITERATIONS: usize = 1_048_576;
 const ITERATIONS: usize = 1 << 15;
@@ -41,7 +39,7 @@ const CONFIGS: &[Config] = &[
     Config { workers: 32, pool_size: 32 },
 ];
 
-struct Manager {}
+struct Manager;
 
 #[async_trait::async_trait]
 impl deadpool::Manager for Manager {
@@ -57,32 +55,31 @@ impl deadpool::Manager for Manager {
 
 type Pool = deadpool::Pool<Manager>;
 
-async fn bench_get(cfg: Config) {
-    let pool = Pool::builder(Manager {}).max_size(cfg.pool_size).build();
-    let join_handles: Vec<JoinHandle<()>> = (0..cfg.workers)
-        .map(|_| {
-            let pool = pool.clone();
-            tokio::spawn(async move {
-                for _ in 0..cfg.operations_per_worker() {
-                    let _ = pool.get().await;
-                }
-            })
-        })
-        .collect();
-    for join_handle in join_handles {
-        join_handle.await.unwrap();
-    }
+fn bench_get(cfg: Config) {
+    let pool = Pool::builder(Manager).max_size(cfg.pool_size).build();
+
+    scope(|s| {
+        for _ in 0..cfg.workers {
+            s.spawn(|| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap();
+
+                runtime.block_on(async {
+                    for _ in 0..cfg.operations_per_worker() {
+                        let _ = pool.get().await;
+                    }
+                });
+            });
+        }
+    });
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    let runtime = tokio::runtime::Runtime::new().unwrap();
     let mut group = c.benchmark_group("managed");
-    group.throughput(criterion::Throughput::Elements(
-        ITERATIONS.try_into().expect("Can't convert u64 to usize"),
-    ));
     for &config in CONFIGS {
-        group.bench_with_input(BenchmarkId::new("get", config), &config, |b, &cfg| {
-            b.to_async(&runtime).iter(|| bench_get(cfg))
+        group.bench_function(BenchmarkId::new("get", config), |b| {
+            b.iter(|| bench_get(config))
         });
     }
 }
