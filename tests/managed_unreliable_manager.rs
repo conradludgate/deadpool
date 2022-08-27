@@ -1,19 +1,13 @@
-use std::{
-    sync::atomic::{AtomicUsize, Ordering},
-    time::Duration,
-};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio::time;
-
-use deadpool::{RecycleError, RecycleResult};
 
 type Pool = deadpool::Pool<Manager>;
 
 struct Manager {
     create_fail: bool,
     recycle_fail: bool,
-    detached: AtomicUsize,
 }
 
 #[async_trait]
@@ -28,16 +22,12 @@ impl deadpool::Manager for Manager {
             Ok(())
         }
     }
-    async fn recycle(&self, _conn: &mut ()) -> RecycleResult<()> {
+    async fn recycle(&self, conn: ()) -> Option<()> {
         if self.recycle_fail {
-            Err(RecycleError::Backend(()))
+            None
         } else {
-            Ok(())
+            Some(conn)
         }
-    }
-
-    fn detach(&self, _obj: &mut Self::Type) {
-        self.detached.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -46,7 +36,6 @@ async fn create() {
     let manager = Manager {
         create_fail: true,
         recycle_fail: false,
-        detached: AtomicUsize::new(0),
     };
 
     let pool = Pool::builder(manager).max_size(16).build();
@@ -73,7 +62,6 @@ async fn recycle() {
     let manager = Manager {
         create_fail: false,
         recycle_fail: true,
-        detached: AtomicUsize::new(0),
     };
 
     let pool = Pool::builder(manager).max_size(16).build();
@@ -85,7 +73,6 @@ async fn recycle() {
     let status = pool.status();
     assert_eq!(status.available, 16);
     assert_eq!(status.size, 2);
-    assert_eq!(pool.manager().detached.load(Ordering::Relaxed), 0);
     {
         let _a = pool.get().await.unwrap();
         // All connections fail to recycle. Thus reducing the
@@ -93,7 +80,6 @@ async fn recycle() {
         let status = pool.status();
         assert_eq!(status.available, 15);
         assert_eq!(status.size, 0);
-        assert_eq!(pool.manager().detached.load(Ordering::Relaxed), 2);
     }
     let status = pool.status();
     assert_eq!(status.available, 16);

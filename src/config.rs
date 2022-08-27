@@ -13,7 +13,6 @@ pub struct PoolConfig {
     /// Timeouts of the [`Pool`].
     ///
     /// [`Pool`]: super::Pool
-    #[cfg_attr(feature = "serde", serde(default))]
     pub timeout: Option<Duration>,
 }
 

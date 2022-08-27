@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use deadpool::{Manager, Pool, RecycleResult};
+use deadpool::{Manager, Pool};
 use itertools::Itertools;
 use tokio::time::{sleep, timeout};
 
@@ -65,9 +65,8 @@ impl Manager for GatedManager {
         self.gates.create.open().await?;
         Ok(())
     }
-    async fn recycle(&self, _conn: &mut Self::Type) -> RecycleResult<Self::Error> {
-        self.gates.recycle.open().await?;
-        Ok(())
+    async fn recycle(&self, t: Self::Type) -> Option<Self::Type> {
+        self.gates.recycle.open().await.map(|_| t).ok()
     }
 }
 

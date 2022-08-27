@@ -48,8 +48,8 @@ impl deadpool::Manager for Manager {
     async fn create(&self) -> Result<Self::Type, Self::Error> {
         Ok(())
     }
-    async fn recycle(&self, _: &mut Self::Type) -> deadpool::RecycleResult<Self::Error> {
-        Ok(())
+    async fn recycle(&self, t: Self::Type) -> Option<Self::Type> {
+        Some(t)
     }
 }
 

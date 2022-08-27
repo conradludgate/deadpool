@@ -1,48 +1,5 @@
 use std::fmt;
 
-/// Possible errors returned by the [`Manager::recycle()`] method.
-///
-/// [`Manager::recycle()`]: super::Manager::recycle
-#[derive(Debug)]
-pub enum RecycleError<E> {
-    /// Recycling failed for some other reason.
-    Message(String),
-
-    /// Recycling failed for some other reason.
-    StaticMessage(&'static str),
-
-    /// Error caused by the backend.
-    Backend(E),
-}
-
-impl<E> From<E> for RecycleError<E> {
-    fn from(e: E) -> Self {
-        Self::Backend(e)
-    }
-}
-
-impl<E: fmt::Display> fmt::Display for RecycleError<E> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Message(msg) => write!(f, "Error occurred while recycling an object: {}", msg),
-            Self::StaticMessage(msg) => {
-                write!(f, "Error occurred while recycling an object: {}", msg)
-            }
-            Self::Backend(e) => write!(f, "Error occurred while recycling an object: {}", e),
-        }
-    }
-}
-
-impl<E: std::error::Error + 'static> std::error::Error for RecycleError<E> {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Message(_) => None,
-            Self::StaticMessage(_) => None,
-            Self::Backend(e) => Some(e),
-        }
-    }
-}
-
 /// Possible steps causing the timeout in an error returned by [`Pool::get()`]
 /// method.
 ///

@@ -3,7 +3,7 @@ use std::{convert::Infallible, time::Duration};
 use async_trait::async_trait;
 use tokio::time;
 
-use deadpool::{self, Object, PoolError, RecycleResult};
+use deadpool::{Object, PoolError};
 
 type Pool = deadpool::Pool<Manager>;
 
@@ -18,8 +18,8 @@ impl deadpool::Manager for Manager {
         Ok(0)
     }
 
-    async fn recycle(&self, _conn: &mut usize) -> RecycleResult<Infallible> {
-        Ok(())
+    async fn recycle(&self, conn: usize) -> Option<usize> {
+        Some(conn)
     }
 }
 

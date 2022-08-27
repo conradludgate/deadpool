@@ -1,45 +1,28 @@
-use std::{fmt, marker::PhantomData, time::Duration};
+use std::time::Duration;
 
-use super::{Manager, Object, Pool, PoolConfig};
+use super::{Manager, Pool, PoolConfig};
 
 /// Builder for [`Pool`]s.
 ///
 /// Instances of this are created by calling the [`Pool::builder()`] method.
 #[must_use = "builder does nothing itself, use `.build()` to build it"]
-pub struct PoolBuilder<M, W = Object<M>>
+#[derive(Debug)]
+pub struct PoolBuilder<M>
 where
     M: Manager,
-    W: From<Object<M>>,
 {
     pub(crate) manager: M,
     pub(crate) config: PoolConfig,
-    _wrapper: PhantomData<fn() -> W>,
 }
 
-// Implemented manually to avoid unnecessary trait bound on `W` type parameter.
-impl<M, W> fmt::Debug for PoolBuilder<M, W>
-where
-    M: fmt::Debug + Manager,
-    W: From<Object<M>>,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PoolBuilder")
-            .field("manager", &self.manager)
-            .field("config", &self.config)
-            .finish()
-    }
-}
-
-impl<M, W> PoolBuilder<M, W>
+impl<M> PoolBuilder<M>
 where
     M: Manager,
-    W: From<Object<M>>,
 {
     pub(crate) fn new(manager: M) -> Self {
         Self {
             manager,
             config: PoolConfig::default(),
-            _wrapper: PhantomData::default(),
         }
     }
 
@@ -48,7 +31,7 @@ where
     /// # Errors
     ///
     /// See [`BuildError`] for details.
-    pub fn build(self) -> Pool<M, W> {
+    pub fn build(self) -> Pool<M> {
         Pool::from_builder(self)
     }
 

@@ -6,8 +6,6 @@ use tokio::{
     task, time,
 };
 
-use deadpool::{RecycleError, RecycleResult};
-
 type Pool = deadpool::Pool<Manager>;
 
 #[derive(Clone)]
@@ -56,11 +54,8 @@ impl deadpool::Manager for Manager {
         self.create_rx.lock().await.recv().await.unwrap()
     }
 
-    async fn recycle(&self, _conn: &mut ()) -> RecycleResult<()> {
-        match self.recycle_rx.lock().await.recv().await.unwrap() {
-            Ok(()) => Ok(()),
-            Err(e) => Err(RecycleError::Backend(e)),
-        }
+    async fn recycle(&self, t: Self::Type) -> Option<Self::Type> {
+        self.recycle_rx.lock().await.recv().await.unwrap().map(|_| t).ok()
     }
 }
 

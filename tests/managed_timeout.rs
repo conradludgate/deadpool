@@ -2,9 +2,9 @@ use std::{convert::Infallible, time::Duration};
 
 use async_trait::async_trait;
 
-use deadpool::{Object, PoolConfig, PoolError, RecycleResult};
+use deadpool::{PoolConfig, PoolError};
 
-type Pool = deadpool::Pool<Manager, Object<Manager>>;
+type Pool = deadpool::Pool<Manager>;
 
 struct Manager {}
 
@@ -17,7 +17,7 @@ impl deadpool::Manager for Manager {
         std::future::pending().await
     }
 
-    async fn recycle(&self, _conn: &mut usize) -> RecycleResult<Infallible> {
+    async fn recycle(&self, _: Self::Type) -> Option<Self::Type> {
         std::future::pending().await
     }
 }

@@ -31,8 +31,8 @@ impl deadpool::Manager for Manager {
         Ok(Computer {})
     }
     
-    async fn recycle(&self, _: &mut Computer) -> deadpool::RecycleResult<Error> {
-        Ok(())
+    async fn recycle(&self, c: Computer) -> Option<Computer> {
+        Some(c)
     }
 }
 
