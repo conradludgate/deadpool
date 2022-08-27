@@ -62,27 +62,22 @@ const CONFIGS: &[Config] = &[
     Config { workers: 32, pool_size: 32 },
 ];
 
-fn bench_get(cfg: Config) {
+async fn bench_get(cfg: Config) {
     let pool = Pool::builder(Manager).max_size(cfg.pool_size).build();
-
-    std::thread::scope(|s| {
-        for _ in 0..cfg.workers {
-            s.spawn(|| {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .build()
-                    .unwrap();
-
-                runtime.block_on(cfg.run(pool.clone()));
-            });
-        }
-    });
+    let join_handles: Vec<JoinHandle<()>> = (0..cfg.workers)
+        .map(|_| tokio::spawn(cfg.run(pool.clone())))
+        .collect();
+    for join_handle in join_handles {
+        join_handle.await.unwrap();
+    }
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
     let mut group = c.benchmark_group("managed");
     for &config in CONFIGS {
         group.bench_function(BenchmarkId::new("get", config), |b| {
-            b.iter(|| bench_get(config))
+            b.to_async(&runtime).iter(|| bench_get(config))
         });
     }
 }
