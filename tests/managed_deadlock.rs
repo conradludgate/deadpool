@@ -55,7 +55,14 @@ impl deadpool::Manager for Manager {
     }
 
     async fn recycle(&self, t: Self::Type) -> Option<Self::Type> {
-        self.recycle_rx.lock().await.recv().await.unwrap().map(|_| t).ok()
+        self.recycle_rx
+            .lock()
+            .await
+            .recv()
+            .await
+            .unwrap()
+            .map(|_| t)
+            .ok()
     }
 }
 

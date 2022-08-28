@@ -1,10 +1,9 @@
-use std::fmt::Display;
+use std::{fmt::Display, time::Duration};
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use tokio::task::JoinHandle;
 
-//const ITERATIONS: usize = 1_048_576;
-const ITERATIONS: usize = 1 << 15;
+const ITERATIONS: usize = 1 << 6;
 
 struct Manager;
 
@@ -41,7 +40,8 @@ impl Config {
 
     async fn run(self, pool: Pool) {
         for _ in 0..self.operations_per_worker() {
-            let _ = pool.get().await;
+            let _obj = pool.get().await.unwrap();
+            tokio::time::sleep(Duration::from_micros(1)).await; // simulate load
         }
     }
 }

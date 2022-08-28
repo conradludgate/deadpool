@@ -78,7 +78,7 @@ async fn closing() {
     tokio::task::yield_now().await;
     assert_eq!(pool.status().available, 0);
 
-    pool.close();
+    pool.close().await;
     tokio::task::yield_now().await;
     assert_eq!(pool.status().available, 0);
 
@@ -98,7 +98,7 @@ async fn closing() {
 async fn close_resize() {
     let mgr = Manager {};
     let pool = Pool::builder(mgr).max_size(1).build();
-    pool.close();
+    pool.close().await;
     assert_eq!(pool.status().size, 0);
     assert_eq!(pool.status().max_size, 1);
 }

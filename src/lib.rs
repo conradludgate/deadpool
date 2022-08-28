@@ -6,7 +6,6 @@
     rustdoc::broken_intra_doc_links,
     rustdoc::private_intra_doc_links
 )]
-#![forbid(non_ascii_idents, unsafe_code)]
 #![warn(clippy::pedantic)]
 #![warn(
     deprecated_in_future,
@@ -26,6 +25,7 @@
     clippy::match_same_arms
 )]
 
+mod array_queue;
 mod builder;
 mod config;
 mod errors;
@@ -37,13 +37,13 @@ pub use self::{
     builder::PoolBuilder,
     config::PoolConfig,
     errors::{PoolError, TimeoutType},
-    metrics::Metrics,
+    metrics::PoolMetrics,
     object::Object,
     pool::Pool,
 };
 
+use array_queue::ArrayQueue;
 use async_trait::async_trait;
-use crossbeam_queue::ArrayQueue;
 use tokio::sync::Semaphore;
 
 /// The current pool status.

@@ -1,10 +1,15 @@
-use std::{fmt, future::Future, sync::Arc, time::Duration};
+use std::{
+    fmt,
+    future::Future,
+    sync::{atomic::Ordering, Arc},
+    time::Duration,
+};
 
 use tokio::{sync::TryAcquireError, time::Instant};
 
 use crate::{
-    object::ObjectInner, Manager, Metrics, Object, PoolBuilder, PoolConfig, PoolError, Slots,
-    Status, TimeoutType,
+    metrics::PoolMetrics, Manager, Object, PoolBuilder, PoolConfig, PoolError, Slots, Status,
+    TimeoutType,
 };
 
 /// Generic object and connection pool.
@@ -35,6 +40,11 @@ impl<M: Manager> Clone for Pool<M> {
 }
 
 impl<M: Manager> Pool<M> {
+    /// Get the metrics of the pool
+    pub fn metrics(&self) -> &PoolMetrics {
+        &self.inner.metrics
+    }
+
     /// Instantiates a builder for a new [`Pool`].
     ///
     /// This is the only way to create a [`Pool`] instance.
@@ -45,9 +55,10 @@ impl<M: Manager> Pool<M> {
     pub(crate) fn from_builder(builder: PoolBuilder<M>) -> Self {
         Self {
             inner: Arc::new(PoolInner {
-                manager: builder.manager,
                 slots: Slots::new(builder.config.max_size),
                 config: builder.config,
+                metrics: PoolMetrics::default(),
+                manager: builder.manager,
             }),
         }
     }
@@ -72,11 +83,34 @@ impl<M: Manager> Pool<M> {
         &self,
         timeouts: Option<Duration>,
     ) -> Result<Object<M>, PoolError<M::Error>> {
+        let start = Instant::now();
+        let res = self.get_inner(start, timeouts).await;
+
+        self.inner.metrics.record_waiting(start);
+
+        match res {
+            Ok(success) => Ok(success),
+            Err(error) => {
+                let _ = self
+                    .inner
+                    .metrics
+                    .failure_count
+                    .fetch_add(1, Ordering::Relaxed);
+                Err(error)
+            }
+        }
+    }
+
+    async fn get_inner(
+        &self,
+        now: Instant,
+        timeouts: Option<Duration>,
+    ) -> Result<Object<M>, PoolError<M::Error>> {
         let non_blocking = match timeouts {
             Some(t) => t.is_zero(),
             None => false,
         };
-        let instant = timeouts.and_then(|d| Instant::now().checked_add(d));
+        let instant = timeouts.and_then(|d| now.checked_add(d));
 
         let permit = if non_blocking {
             self.inner
@@ -100,7 +134,7 @@ impl<M: Manager> Pool<M> {
         };
 
         loop {
-            let inner_obj = if let Some(inner_obj) = self.inner.slots.vec.pop() {
+            let inner_obj = if let Some(inner_obj) = self.inner.slots.vec.pop().await {
                 self.try_recycle(instant, inner_obj).await?
             } else {
                 Some(self.try_create(instant).await?)
@@ -116,26 +150,17 @@ impl<M: Manager> Pool<M> {
     async fn try_recycle(
         &self,
         instant: Option<Instant>,
-        inner_obj: ObjectInner<M::Type>,
-    ) -> Result<Option<ObjectInner<M::Type>>, PoolError<M::Error>> {
-        let ObjectInner { obj, metrics } = inner_obj;
-
+        inner_obj: M::Type,
+    ) -> Result<Option<M::Type>, PoolError<M::Error>> {
         apply_timeout(TimeoutType::Recycle, instant, async move {
-            Ok::<_, M::Error>(self.inner.manager.recycle(obj).await)
+            Ok::<_, M::Error>(self.inner.manager.recycle(inner_obj).await)
         })
         .await
-        .map(|o| o.map(|obj| ObjectInner { obj, metrics }))
     }
 
     #[inline]
-    async fn try_create(
-        &self,
-        instant: Option<Instant>,
-    ) -> Result<ObjectInner<M::Type>, PoolError<M::Error>> {
-        Ok(ObjectInner {
-            obj: apply_timeout(TimeoutType::Create, instant, self.inner.manager.create()).await?,
-            metrics: Metrics::default(),
-        })
+    async fn try_create(&self, instant: Option<Instant>) -> Result<M::Type, PoolError<M::Error>> {
+        apply_timeout(TimeoutType::Create, instant, self.inner.manager.create()).await
     }
 
     /// Closes this [`Pool`].
@@ -144,9 +169,9 @@ impl<M: Manager> Pool<M> {
     /// [`PoolError::Closed`] immediately.
     ///
     /// This operation resizes the pool to 0.
-    pub fn close(&self) {
+    pub async fn close(&self) {
         self.inner.slots.semaphore.close();
-        while self.inner.slots.vec.pop().is_some() {}
+        while self.inner.slots.vec.pop().await.is_some() {}
     }
 
     /// Indicates whether this [`Pool`] has been closed.
@@ -177,14 +202,16 @@ impl<M: Manager> Pool<M> {
 
 #[derive(Debug)]
 pub(crate) struct PoolInner<M: Manager + ?Sized> {
-    pub(crate) slots: Slots<ObjectInner<M::Type>>,
+    pub(crate) slots: Slots<M::Type>,
     config: PoolConfig,
+    metrics: PoolMetrics,
     manager: M,
 }
 
 impl<M: Manager + ?Sized> PoolInner<M> {
-    pub(crate) fn return_object(&self, inner: ObjectInner<M::Type>) {
-        if self.slots.vec.push(inner).is_ok() {
+    pub(crate) fn return_object(&self, inner: M::Type, start: Instant) {
+        self.metrics.record_active(start);
+        if self.slots.vec.push_blocking(inner).is_ok() {
             self.slots.semaphore.add_permits(1);
         }
     }

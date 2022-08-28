@@ -4,7 +4,9 @@ use std::{
     sync::{Arc, Weak},
 };
 
-use crate::{pool::PoolInner, Manager, Metrics, Pool};
+use tokio::time::Instant;
+
+use crate::{pool::PoolInner, Manager, Pool};
 
 /// Wrapper around the actual pooled object which implements [`Deref`],
 /// [`DerefMut`] and [`Drop`] traits.
@@ -14,10 +16,13 @@ use crate::{pool::PoolInner, Manager, Metrics, Pool};
 #[must_use]
 pub struct Object<M: Manager + ?Sized> {
     /// The actual object
-    inner: Option<ObjectInner<M::Type>>,
+    inner: Option<M::Type>,
 
     /// Pool to return the pooled object to.
     pool: Weak<PoolInner<M>>,
+
+    /// Time this object was claimed
+    start: Instant,
 }
 
 impl<M> fmt::Debug for Object<M>
@@ -32,20 +37,21 @@ where
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct ObjectInner<Type> {
-    /// Actual pooled object.
-    pub(crate) obj: Type,
+// #[derive(Debug)]
+// pub(crate) struct ObjectInner<Type> {
+//     /// Actual pooled object.
+//     pub(crate) obj: Type,
 
-    /// Object metrics.
-    pub(crate) metrics: Metrics,
-}
+//     /// Object metrics.
+//     pub(crate) metrics: ObjectMetrics,
+// }
 
 impl<M: Manager> Object<M> {
-    pub(crate) fn new(inner: ObjectInner<M::Type>, pool: &Arc<PoolInner<M>>) -> Self {
+    pub(crate) fn new(inner: M::Type, pool: &Arc<PoolInner<M>>) -> Self {
         Self {
             inner: Some(inner),
             pool: Arc::downgrade(pool),
+            start: Instant::now(),
         }
     }
 
@@ -53,17 +59,17 @@ impl<M: Manager> Object<M> {
     /// size of the [`Pool`].
     #[must_use]
     pub fn take(mut this: Self) -> M::Type {
-        let inner = this.inner.take().unwrap().obj;
+        let inner = this.inner.take().unwrap();
         if let Some(pool) = Object::pool(&this) {
             pool.inner.slots.semaphore.add_permits(1);
         }
         inner
     }
 
-    /// Get object statistics
-    pub fn metrics(this: &Self) -> &Metrics {
-        &this.inner.as_ref().unwrap().metrics
-    }
+    // /// Get object statistics
+    // pub fn metrics(this: &Self) -> &ObjectMetrics {
+    //     &this.inner.as_ref().unwrap().metrics
+    // }
 
     /// Returns the [`Pool`] this [`Object`] belongs to.
     ///
@@ -78,7 +84,7 @@ impl<M: Manager + ?Sized> Drop for Object<M> {
     fn drop(&mut self) {
         if let Some(inner) = self.inner.take() {
             if let Some(pool) = self.pool.upgrade() {
-                pool.return_object(inner);
+                pool.return_object(inner, self.start);
             }
         }
     }
@@ -87,13 +93,13 @@ impl<M: Manager + ?Sized> Drop for Object<M> {
 impl<M: Manager> Deref for Object<M> {
     type Target = M::Type;
     fn deref(&self) -> &M::Type {
-        &self.inner.as_ref().unwrap().obj
+        self.inner.as_ref().unwrap()
     }
 }
 
 impl<M: Manager> DerefMut for Object<M> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.inner.as_mut().unwrap().obj
+        self.inner.as_mut().unwrap()
     }
 }
 
